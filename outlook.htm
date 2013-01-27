@@ -1,0 +1,388 @@
+<html>
+<head>
+<script language="javascript" src="mootools.js"></script>
+<script language="javascript" type="text/javascript">
+var slidrs = {};
+var msgsScroll;
+
+var messagesslidr;
+var scrollslidr;
+
+//the width and height of a little preview box
+var previewWidth = 200;
+var previewHeight = 80;
+
+//the current location of the items slider
+var msgsloc = -1;
+//the total number of items in the current directory
+var msgslen = 0;
+//the number of currently-displayed preview boxen
+var msgsboxes = 0;
+//the current directory of messages
+var msgsdir;
+var previews = {};
+
+var scrollenable = true;
+
+var resizing = false;
+var loading = 0;
+
+//initialize the panes on document load
+window.addEvent('domready', function(){
+	var firstajax = new Ajax("Outlook.GetNames", {method: 'get', onSuccess: LoadFirst});
+	firstajax.request();
+
+	new SmoothScroll();
+	
+	//create the slide-in effect for the messages subview
+	messagesslidr = new Fx.Style($("messagespane"), 'width', {duration: 300, transition: Fx.Transitions.quadInOut});
+	scrollslidr = new Fx.Style($("messagesknob"), 'height', {duration: 300, transition: Fx.Transitions.quadInOut, onComplete: function() {
+		//create the vertical scroll slider for messages
+		msgsloc = 0;
+		if (msgsScroll)
+			msgsScroll.setOptions({onChange: function(pos) {}});
+		msgsScroll = new Slider($("messagesscroll"), $("messagesknob"), {
+			steps: Math.max(msgslen - Math.floor(window.getHeight()/previewHeight), 0),
+			mode: "vertical",
+			onChange: doscroll
+		}).set(0);
+		doscroll(0);
+	}});
+	
+	doresize();
+	messagesslidr.start(0);
+	scrollslidr.set(window.getHeight());	
+});
+window.addEvent('resize', doresize);
+
+//waits until scrolling is complete
+function delayScroll(val) {
+	if (val == msgsloc) {
+		//console.log("scrolling to pos %x", msgsloc);
+		loaditems();
+	}
+}
+
+function doscroll(pos) {
+	//a bit hackish: Sliders have shadow copies lying around
+	if (pos >= 0 && pos < Math.max(msgslen - Math.floor(window.getHeight()/previewHeight), 0))
+		if (msgsloc != pos && scrollenable) {
+			msgsloc = pos;
+			setTimeout("delayScroll(" + pos + ")",50);
+			//console.log("pos = %x", msgsloc);
+		}
+}
+
+//perform updates to size and message items divs when the window is resized
+function doresize() {
+	//only allow one concurrent resize
+	if (resizing)
+		return;
+	else
+		resizing = true;
+		
+	//transition for scrollbar size
+	scrollslidr.stop();
+	
+	//find the height of the scrollbar
+	var height;
+	if (msgslen * previewHeight <= window.getHeight())
+		height = window.getHeight();
+	else
+		height = Math.max(window.getHeight() * window.getHeight() / (msgslen * previewHeight), 50)
+	
+	mp = $("messagespane");
+	mp.setHTML("");
+	msgsboxes = Math.min(msgslen, Math.floor(window.getHeight()/previewHeight));
+	//build the message/item divs
+	for (var x = 0; x < msgsboxes; ++x) {
+		new Element("div").
+			setProperties({"id": "item" + x, "class": "previewbox"}).
+			setStyles({	"width": previewWidth+"px", 
+						"height": previewHeight+"px", 
+						"left": "0px",
+						"top": "0px" }).
+			addEvent("click", function() {
+				//load the message content
+				var jax = new Ajax("Outlook.GetItemContentsOnPath?lst=" + msgsdir + "&dex=" + this.getProperty("absdex"),
+					{method: "get", onSuccess: function(str) {
+						carea = $("msgcontent")
+						carea.setHTML(str);
+						carea.setStyle("height", window.getHeight());
+					}});
+				jax.request();
+			}).
+			addEvent("mouseover", function() {this.setStyle("background-color", "#758E9F");}).
+			addEvent("mouseout", function() {this.setStyle("background-color", "#647D8F");}).
+			injectInside(mp);
+	}
+		 
+	scrollslidr.start(height);
+	
+	resizing = false;
+}
+
+//set the contents of the _dex_th (reference in Folder.Items) item preview box
+function setpreview(dex, str) {
+	box = $("item" + (dex - msgsloc));
+	//console.log(dex-msgsloc);
+	box.setProperty("absdex", dex);
+	box.setHTML(str);
+}
+
+//Load a set of preview items
+function loaditems() {
+	//if for some reason an ajax load failed, make loading done after 1 second regardless
+	setTimeout(function() {loading = 0;}, 1000);
+	
+	//only allow for one concurrent load batch
+	if (loading > 0)
+		return;
+	else
+		loading = msgsboxes;
+	
+	//loop through each preview box and either fetch the content from the server or load cached content
+	for (var x = 0; x < msgsboxes; ++x) {
+		if (!previews[msgsloc + x]) {
+			//the preview hasn't been loaded yet... send an ajax request.
+			var jax = new Ajax("Outlook.GetItemPreviewOnPath?lst=" + msgsdir + "&dex=" + (msgsloc + x),
+				{method: "get", onSuccess: function(str) {
+					previews[this.dex] = str;
+					setpreview(this.dex, previews[this.dex]);
+					--loading;
+					if (loading <= 0)
+						setScrollEnable(true);
+				}});
+			jax.dex = msgsloc + x;
+			jax.request();
+		}
+		else {
+			//inject a previously-loaded preview item.
+			setpreview(msgsloc + x, previews[msgsloc+x]);
+			--loading;
+			if (loading <= 0)
+				setScrollEnable(true);
+		}
+	}
+}
+
+//enable or disable the items scroll bar
+function setScrollEnable(b) {
+	if (b) {
+		$("messagesscroll").effects().start({"width":20});
+		$("messagesknob").effects().start({"width":20});	
+		scrollenable = true;
+	}
+	else {
+		$("messagesscroll").effects().start({"width":0});
+		$("messagesknob").effects().start({"width":0});
+		scrollenable = false;
+	}
+}
+
+//perform associated loading for an item in the folder hierarchy
+function LoadInner(e) {
+	//prevent events from bubbling down to parent folders
+	if (!e) var e = window.event;
+	e.cancelBubble = true;
+	if (e.stopPropagation) e.stopPropagation();
+
+	mid = this.getProperty("id");
+	//Dynamically construct next set of nodes in subtree
+	if (!this.getProperty("loaded")) {
+		var jax = new Ajax("Outlook.GetNamesOnPath?lst=" + mid, 
+			{method: "get", onSuccess: function(str) {
+				if (str.length == 0)
+					return;
+					
+				subm = this.submitter;
+				subm.setProperties({"loaded": "true"});
+				subl = new Element("ul").setProperties({"class": "mitem"});
+				
+				names = str.split(",");
+				for (var x = 0; x < names.length; ++x) {
+					new Element("li").
+						setProperties({"id": subm.getProperty("id") + "," + x, "class":"msubitem"}).
+						setHTML(names[x]).
+						addEvent("click", LoadInner).
+						addEvent("mouseover", function() {this.setStyle("margin-left",-15);}).
+						addEvent("mouseout", function() {this.setStyle("margin-left",-20);}).
+						injectInside(subl);
+				}
+				
+				subl.injectInside(subm);
+				
+				//show the recently-loaded contents
+				slidrs[mid] = new Fx.Slide(subl, {duration: 500, onComplete: function() {RefreshParentage(mid);} });
+				slidrs[mid].hide();
+				slidrs[mid].toggle();
+			}});
+		jax.submitter = this;
+		jax.request();
+	}
+	else {
+		slidrs[mid].toggle();
+	}
+	
+
+	//update the items list
+	new Ajax("Outlook.GetLenItemsOnPath?lst=" + mid, 
+			{method: 'get', onSuccess: function(str) {
+				msgsdir = mid;
+				msgslen = parseInt(str);
+				messagesslidr.stop();			
+
+				doresize();
+				
+				if (msgslen > 0) {
+					//there are some messages here - load them!
+					previews = {};
+					messagesslidr.start(previewWidth);
+					loaditems();
+					setScrollEnable(true);
+				}
+				else {
+					messagesslidr.start(0);
+					setScrollEnable(false);
+				}
+			}}).request();
+	messagesslidr.start(0);
+}
+
+//Fix a bug wherein sliders don't resize their parent containers appropriately
+function RefreshParentage(id) {
+	subids = id.split(",");
+	for (var x = 1; x < subids.length; ++x) {
+		//name of subid to refresh
+		s = subids.slice(0, x).join(",");
+		slidrs[s].slideIn();
+	}
+}
+
+//Load the root folders
+function LoadFirst(str) {
+	var carea = $("mcontent");
+	carea.setHTML("");
+	names = str.split(",");
+	
+	for (var x = 0; x < names.length; ++x) {
+		new Element("li").
+			setProperties({"id": x},{"class":"msubitem"}).
+			setHTML(names[x]).
+			addEvent("click", LoadInner).
+			injectInside(carea);
+	}
+}
+</script>
+<style type="text/css">
+/*
+lt gray: #647D8F
+dk gray: #596F80
+lt blue: #CFDCE6
+dk blue: #6096BF
+*/
+
+html, body {
+	height: 100%;
+}
+
+body, h1, h3, p {
+	padding: 0;
+	margin: 0;
+}
+
+body {
+	font: 11px/1.6 Lucida Grande, Tahoma, Arial, sans-serif;
+	background-color: #596F80;
+	overflow: hidden;
+}
+
+.vpane {
+	margin: 0 auto;
+	min-height: 100%;
+	height: auto !important;
+	height: 100%;
+}
+
+.mitem {
+	background-color: #CFDCE6;
+	font-weight:bold;
+}
+.msubitem {
+	padding-left: 2px;
+	background-color: #CFDCE6;
+	padding-right: 10px;
+	margin-left:-20px;
+	padding-left: -20px;
+}
+.previewbox {
+	position: relative;
+	border-bottom: 1px solid #CFDCE6;
+	padding-top: 5px;
+	padding-left: 5px;
+	padding-right: 5px;
+	background-color: #647D8F;
+}
+
+.preview {
+	font-size:12px;
+	line-height:15px;
+}
+.subject {font-weight: bold; height:30px; overflow:hidden;}
+.sender {font-style: italic;}
+.date {}
+
+#folderspane {
+	float:left;
+	background-color:#647D8F;
+}
+#messagespane {
+	float:left;
+	overflow:hidden;
+	background-color:#647D8F;
+}
+#messagesscroll {
+	float:left;
+	width:0px;
+	background-color:#999999;
+}
+#messagesknob {
+	height:0px;
+	width:0px;
+	cursor:pointer;
+	background-color:#333333;
+}
+#itempane {
+	background-color:#9999AA;
+}
+#msgcontent {
+	overflow:auto;
+	background-color: #FFFFFF;
+	padding-left: 20px;
+	padding-right: 20px;
+}
+</style>
+</head>
+<body>
+
+<div class="vpane" id="folderspane">
+<ul id="mcontent" class="mitem">
+loading...
+</ul>
+</div>
+
+<div class="vpane" id="messagespane">
+<button id="but" onClick="alert($('mcontent').innerHTML)">asdf</button>
+</div>
+
+<div class="vpane" id="messagesscroll">
+<div id="messagesknob"></div>
+</div>
+
+<div class="vpane" id="itempane">
+<div id="msgcontent">
+</div>
+</div>
+
+</body>
+</html>
